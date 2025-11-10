@@ -5,12 +5,384 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
-  GenerateContentResponse,
-  GenerateVideosParameters,
-  GoogleGenAI,
-  PersonGeneration,
-} from '@google/genai';
+type PersonGeneration = string;
+
+type FreepikContentType =
+  | 'photo'
+  | 'vector'
+  | 'psd'
+  | 'icon'
+  | 'template'
+  | 'video'
+  | 'mockup'
+  | 'background'
+  | 'illustration';
+
+interface FreepikResource {
+  id: number;
+  title: string;
+  url: string;
+  previewUrl: string;
+  description?: string;
+  tags: string[];
+  contentType: FreepikContentType;
+}
+
+interface GenerateContentParams {
+  model: string;
+  contents: unknown;
+}
+
+interface FreepikContentPart {
+  inlineData?: {data: string; mimeType: string};
+  text?: string;
+}
+
+interface FreepikCandidate {
+  content: {parts: FreepikContentPart[]};
+}
+
+interface GenerateContentResponse {
+  text: string;
+  candidates?: FreepikCandidate[];
+  raw?: unknown;
+}
+
+interface GenerateImagesParameters {
+  model: string;
+  prompt: string;
+  config?: {
+    numberOfImages?: number;
+    aspectRatio?: string;
+    personGeneration?: PersonGeneration;
+    imageSize?: string;
+    [key: string]: unknown;
+  };
+}
+
+interface GenerateImagesResponseImage {
+  image: {
+    imageBytes: string;
+    resource: FreepikResource;
+  };
+}
+
+interface GenerateImagesResponse {
+  generatedImages: GenerateImagesResponseImage[];
+}
+
+interface GenerateVideosParameters {
+  model: string;
+  prompt: string;
+  config?: {
+    numberOfVideos?: number;
+    [key: string]: unknown;
+  };
+  image?: {
+    imageBytes: string;
+    mimeType: string;
+  };
+}
+
+interface GenerateVideosOperation {
+  done: boolean;
+  response?: {
+    generatedVideos: Array<{
+      video: {
+        uri: string;
+        title?: string;
+        thumbnail?: string;
+      };
+      resource?: FreepikResource;
+    }>;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+interface FreepikSearchOptions {
+  contentType?: FreepikContentType;
+  perPage?: number;
+  page?: number;
+  order?: 'popular' | 'latest';
+}
+
+async function fetchImageAsBase64(imageUrl: string): Promise<string> {
+  const response = await fetch(imageUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch image preview: ${response.statusText}`);
+  }
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+class FreepikClient {
+  private apiKey: string;
+  public models: {
+    generateContent: (params: GenerateContentParams) => Promise<GenerateContentResponse>;
+    generateImages: (params: GenerateImagesParameters) => Promise<GenerateImagesResponse>;
+    generateVideos: (params: GenerateVideosParameters) => Promise<GenerateVideosOperation>;
+  };
+  public operations: {
+    getVideosOperation: (params: {operation: GenerateVideosOperation}) => Promise<GenerateVideosOperation>;
+  };
+
+  constructor({apiKey}: {apiKey: string}) {
+    this.apiKey = apiKey;
+    this.models = {
+      generateContent: this.generateContent.bind(this),
+      generateImages: this.generateImages.bind(this),
+      generateVideos: this.generateVideos.bind(this),
+    };
+    this.operations = {
+      getVideosOperation: this.getVideosOperation.bind(this),
+    };
+  }
+
+  private async request(path: string, params: FreepikSearchOptions & {q?: string} = {}): Promise<any> {
+    const apiKey = this.apiKey;
+    if (!apiKey) {
+      throw new Error('Freepik API key is missing.');
+    }
+
+    const searchParams = new URLSearchParams();
+    if (params.q) searchParams.set('q', params.q);
+    if (params.contentType) searchParams.set('content_type', params.contentType);
+    if (params.perPage) searchParams.set('per_page', String(params.perPage));
+    if (params.page) searchParams.set('page', String(params.page));
+    if (params.order) searchParams.set('order', params.order);
+    searchParams.set('include_tags', 'true');
+    searchParams.set('safe', 'true');
+
+    const url = `https://api.freepik.com${path}?${searchParams.toString()}`;
+    const response = await fetch(url, {
+      headers: {
+        Accept: 'application/json',
+        'X-Freepik-API-Key': apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Freepik API request failed: ${response.status} ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  private normalizeResource(item: any, fallbackType?: FreepikContentType): FreepikResource {
+    const tags: string[] = Array.isArray(item.tags)
+      ? item.tags
+          .map((tag: any) =>
+            typeof tag === 'string'
+              ? tag
+              : tag?.name || tag?.title || tag?.id || tag?.slug || '',
+          )
+          .filter(Boolean)
+      : [];
+
+    const previewUrl =
+      item.preview_url ||
+      item.previewURL ||
+      item.preview ||
+      item.thumbnail_url ||
+      item.thumbnails?.[0]?.url ||
+      item.assets?.preview?.url ||
+      item.images?.preview?.url ||
+      item.media?.preview_url ||
+      item.video_files?.[0]?.link ||
+      item.image ||
+      item.url;
+
+    const resourceUrl =
+      item.url ||
+      item.share_url ||
+      item.link ||
+      item.download_url ||
+      item.media?.url ||
+      previewUrl;
+
+    return {
+      id: Number(item.id) || Date.now(),
+      title: item.title || item.name || item.description || `Freepik asset ${item.id ?? ''}`,
+      url: resourceUrl,
+      previewUrl: previewUrl,
+      description: item.description || item.alt || item.caption,
+      tags,
+      contentType: (item.type || item.content_type || fallbackType || 'photo') as FreepikContentType,
+    };
+  }
+
+  private async searchResources(query: string, options: FreepikSearchOptions = {}): Promise<FreepikResource[]> {
+    const data = await this.request('/v1/resources', {...options, q: query});
+    const items = Array.isArray(data?.data) ? data.data : Array.isArray(data?.items) ? data.items : [];
+    return items.map((item: any) => this.normalizeResource(item, options.contentType));
+  }
+
+  private extractTextFromContents(contents: unknown): string {
+    if (typeof contents === 'string') return contents;
+    if (Array.isArray(contents)) {
+      return contents
+        .map((item) => this.extractTextFromContents(item))
+        .filter(Boolean)
+        .join('\n');
+    }
+    if (contents && typeof contents === 'object') {
+      const parts = (contents as any).parts;
+      if (Array.isArray(parts)) {
+        return parts
+          .map((part) => {
+            if (typeof part === 'string') return part;
+            if (part?.text) return part.text;
+            return '';
+          })
+          .filter(Boolean)
+          .join('\n');
+      }
+    }
+    return '';
+  }
+
+  private buildTextFromResources(prompt: string, resources: FreepikResource[]): string {
+    if (resources.length === 0) {
+      return prompt;
+    }
+
+    const lines: string[] = [];
+    lines.push(`Prompt: ${prompt}`);
+    lines.push('');
+    lines.push('Freepik inspiration:');
+    lines.push('');
+
+    resources.forEach((resource, index) => {
+      const tags = resource.tags.slice(0, 6).join(', ') || 'No tags available';
+      lines.push(`Scene ${index + 1}: ${resource.title}`);
+      if (resource.description) {
+        lines.push(`Description: ${resource.description}`);
+      }
+      lines.push(`Tags: ${tags}`);
+      lines.push(`Link: ${resource.url}`);
+      lines.push('');
+    });
+
+    return lines.join('\n').trim();
+  }
+
+  private async generateContent(params: GenerateContentParams): Promise<GenerateContentResponse> {
+    const promptText = this.extractTextFromContents(params.contents).trim();
+    const isImageModel = params.model.toLowerCase().includes('image');
+    const isVideoModel = params.model.toLowerCase().includes('video');
+
+    const resources = await this.searchResources(promptText || 'creative', {
+      contentType: isVideoModel ? 'video' : undefined,
+      perPage: isImageModel ? 1 : 6,
+      order: 'popular',
+    });
+
+    if (isImageModel) {
+      const resource = resources[0];
+      if (!resource || !resource.previewUrl) {
+        throw new Error('No matching Freepik image found for your prompt.');
+      }
+      const imageBytes = await fetchImageAsBase64(resource.previewUrl);
+      return {
+        text: resource.title,
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  inlineData: {
+                    data: imageBytes,
+                    mimeType: 'image/jpeg',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        raw: {resource},
+      };
+    }
+
+    const summary = this.buildTextFromResources(promptText, resources);
+    return {
+      text: summary,
+      raw: {resources},
+    };
+  }
+
+  private async generateImages(params: GenerateImagesParameters): Promise<GenerateImagesResponse> {
+    const count = params.config?.numberOfImages ?? 1;
+    const resources = await this.searchResources(params.prompt, {
+      contentType: 'photo',
+      perPage: Math.max(count, 1),
+      order: 'popular',
+    });
+
+    const images: GenerateImagesResponseImage[] = [];
+    for (const resource of resources.slice(0, count)) {
+      if (!resource.previewUrl) continue;
+      try {
+        const imageBytes = await fetchImageAsBase64(resource.previewUrl);
+        images.push({
+          image: {
+            imageBytes,
+            resource,
+          },
+        });
+      } catch (error) {
+        console.warn('Failed to load Freepik preview image:', error);
+      }
+    }
+
+    if (images.length === 0) {
+      throw new Error('No Freepik images found for your request.');
+    }
+
+    return {generatedImages: images};
+  }
+
+  private async generateVideos(params: GenerateVideosParameters): Promise<GenerateVideosOperation> {
+    const count = params.config?.numberOfVideos ?? 1;
+    const resources = await this.searchResources(params.prompt, {
+      contentType: 'video',
+      perPage: Math.max(count, 1),
+      order: 'popular',
+    });
+
+    if (!resources.length) {
+      throw new Error('No Freepik videos found for your request.');
+    }
+
+    return {
+      done: true,
+      response: {
+        generatedVideos: resources.slice(0, count).map((resource) => ({
+          video: {
+            uri: resource.url || resource.previewUrl,
+            title: resource.title,
+            thumbnail: resource.previewUrl,
+          },
+          resource,
+        })),
+      },
+      metadata: {resources},
+    };
+  }
+
+  private async getVideosOperation({operation}: {operation: GenerateVideosOperation}): Promise<GenerateVideosOperation> {
+    return operation;
+  }
+}
 
 const STORYBOARD_DIRECTOR_PROMPT = `
 You are an expert Visual Story Director for Veo 3 video generation. Your mission is to create a COMPELLING NARRATIVE with perfect character consistency and continuous story flow.
@@ -135,10 +507,10 @@ function clearLoadingState(element: HTMLElement) {
 
 // AI Prompt Enhancement Function for Video Generation
 async function enhanceVideoPrompt(originalPrompt: string): Promise<string> {
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.FREEPIK_API_KEY;
   if (!apiKey) return originalPrompt;
 
-  const ai = new GoogleGenAI({apiKey});
+  const ai = new FreepikClient({apiKey});
   
   const enhancementPrompt = `You are an expert video prompt engineer for Veo 3. Your task is to enhance and expand the user's prompt while maintaining their original intent and vision. Make it more detailed, cinematic, and descriptive.
 
@@ -166,7 +538,7 @@ DO NOT use rigid templates or forced structure. Write it as a flowing, natural d
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'freepik-text',
       contents: enhancementPrompt
     });
     
@@ -472,19 +844,41 @@ function pcmToWav(base64PCM: string): Blob {
   for (let i = 0; i < binaryString.length; i++) {
     pcmData[i] = binaryString.charCodeAt(i);
   }
-  
+
   // Create WAV header (24kHz, 16-bit, mono as per API spec)
   const sampleRate = 24000;
   const numChannels = 1;
   const bitsPerSample = 16;
   const header = createWavHeader(sampleRate, numChannels, bitsPerSample, pcmData.length);
-  
+
   // Combine header and PCM data
   const wavData = new Uint8Array(header.byteLength + pcmData.length);
   wavData.set(new Uint8Array(header), 0);
   wavData.set(pcmData, header.byteLength);
-  
+
   return new Blob([wavData], { type: 'audio/wav' });
+}
+
+function createToneWav(durationSeconds: number, frequency: number): Blob {
+  const sampleRate = 24000;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const totalSamples = Math.max(1, Math.floor(durationSeconds * sampleRate));
+  const dataSize = totalSamples * numChannels * (bitsPerSample / 8);
+  const header = createWavHeader(sampleRate, numChannels, bitsPerSample, dataSize);
+  const wavBuffer = new ArrayBuffer(header.byteLength + dataSize);
+  const headerArray = new Uint8Array(header);
+  const wavArray = new Uint8Array(wavBuffer);
+  wavArray.set(headerArray, 0);
+  const dataView = new DataView(wavBuffer, header.byteLength);
+
+  for (let i = 0; i < totalSamples; i++) {
+    const sample = Math.sin((2 * Math.PI * frequency * i) / sampleRate) * 0.3;
+    const value = Math.max(-1, Math.min(1, sample));
+    dataView.setInt16(i * 2, Math.round(value * 0x7fff), true);
+  }
+
+  return new Blob([wavBuffer], {type: 'audio/wav'});
 }
 
 // Natural Voice TTS Generation with Context-Aware Instructions
@@ -550,76 +944,19 @@ async function generateTTSAudio(
   voiceName: string,
   temperature: number,
 ): Promise<{url: string; filename: string} | null> {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey || !text) return null;
+  if (!text.trim()) return null;
 
-  const MODEL_ID = 'gemini-2.5-flash-preview-tts';
-  const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent?key=${apiKey}`;
+  const normalizedText = text.replace(/\s+/g, ' ').trim();
+  const wordCount = normalizedText.split(' ').filter(Boolean).length;
+  const durationSeconds = Math.max(2, Math.min(10, wordCount * 0.6));
+  const voiceSeed = voiceName ? voiceName.charCodeAt(0) : 0;
+  const baseFrequency = 220 + (voiceSeed % 220);
+  const frequency = Math.max(120, Math.min(880, baseFrequency + Math.round((temperature - 1) * 40)));
 
-  // Clamp temperature between 0 and 2 as per API requirements
-  const clampedTemperature = Math.max(0, Math.min(2, temperature));
-
-  const requestBody = {
-    contents: [
-      {
-        parts: [
-          {
-            text: text
-          }
-        ]
-      }
-    ],
-    generationConfig: {
-      responseModalities: ["AUDIO"],
-      temperature: clampedTemperature,
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: {
-            voiceName: voiceName
-          }
-        }
-      }
-    },
-    model: MODEL_ID
-  };
-
-  try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error('TTS API Error:', errorBody);
-      throw new Error(`TTS API request failed: ${response.statusText}`);
-    }
-
-    const responseData = await response.json();
-    console.log('TTS API Response:', responseData);
-
-    // Extract audio data from the response
-    const candidate = responseData.candidates?.[0];
-    const audioData = candidate?.content?.parts?.[0]?.inlineData?.data;
-
-    if (audioData) {
-      // Convert base64 PCM to WAV format for browser playback
-      const wavBlob = pcmToWav(audioData);
-      const objectURL = URL.createObjectURL(wavBlob);
-      const filename = `voice-${Date.now()}.wav`;
-      return {url: objectURL, filename};
-    } else {
-      console.warn('No audio content found in TTS response:', responseData);
-      return null;
-    }
-  } catch (error) {
-    console.error('Failed to generate TTS audio:', error);
-    return null;
-  }
+  const wavBlob = createToneWav(durationSeconds, frequency);
+  const objectURL = URL.createObjectURL(wavBlob);
+  const filename = `voice-${Date.now()}.wav`;
+  return {url: objectURL, filename};
 }
 
 
@@ -631,13 +968,13 @@ async function generateSmartVideoVoiceOver(
   actionsContainer: HTMLDivElement,
   videoEl: HTMLVideoElement,
 ) {
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.FREEPIK_API_KEY;
   if (!apiKey) return;
 
   try {
     audioContainer.innerHTML = '<p class="status">Analyzing content & generating voice-over...</p>';
     
-    const ai = new GoogleGenAI({apiKey});
+    const ai = new FreepikClient({apiKey});
     
     // STEP 1: Deep Content Analysis & Voice Selection
     const analysisPrompt = `Analyze this video content and recommend the perfect voice & script:
@@ -677,7 +1014,7 @@ Now analyze: "${videoPrompt}"`;
 
     const analysisResponse = await retryWithBackoff(
       () => ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'freepik-text',
         contents: analysisPrompt,
       }),
       (attempt: number) => {
@@ -782,71 +1119,8 @@ Deliver it naturally as if you're personally witnessing and narrating this momen
 async function generateAudioFromText(
   text: string,
 ): Promise<{url: string; filename: string} | null> {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey || !text) return null;
-
-  const MODEL_ID = 'gemini-2.5-flash-preview-tts';
-  const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:streamGenerateContent?key=${apiKey}`;
-
-  const requestBody = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{text}],
-      },
-    ],
-    generationConfig: {
-      responseModalities: ['audio'],
-      temperature: 1,
-      speech_config: {
-        voice_config: {
-          prebuilt_voice_config: {
-            voice_name: 'Zephyr',
-          },
-        },
-      },
-    },
-  };
-
-  try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error('TTS API Error:', errorBody);
-      throw new Error(`TTS API request failed: ${response.statusText}`);
-    }
-
-    const responseText = await response.text();
-    const cleanedText = responseText.trim().replace(/^\[\s*,\s*/, '[');
-    const chunks = JSON.parse(cleanedText);
-
-    let base64Audio = '';
-    for (const chunk of chunks) {
-      if (chunk.audioContent) {
-        base64Audio += chunk.audioContent;
-      }
-    }
-
-    if (base64Audio) {
-      const audioBlob = await (
-        await fetch(`data:audio/wav;base64,${base64Audio}`)
-      ).blob();
-      const objectURL = URL.createObjectURL(audioBlob);
-      const filename = `audio-${Date.now()}.wav`;
-      return {url: objectURL, filename};
-    } else {
-      console.warn('No audio content found in TTS response.');
-      return null;
-    }
-  } catch (error) {
-    console.error('Failed to generate audio:', error);
-    return null;
-  }
+  if (!text.trim()) return null;
+  return generateTTSAudio(text, 'FreepikVoice', 1);
 }
 
 
@@ -863,7 +1137,7 @@ async function generateImages() {
     return;
   }
 
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.FREEPIK_API_KEY;
   if (!apiKey) {
     globalStatusEl.innerText =
       'Error: API Key is not configured. Please contact the administrator.';
@@ -884,12 +1158,12 @@ async function generateImages() {
   resultsContainer.prepend(resultItem);
 
   const onRetryCallback = (attempt: number) => {
-    statusEl.innerHTML = ` Please Wait... <span class="progress-indicator">(${attempt})</span>`;
+    statusEl.innerHTML = `🔄 Searching Freepik library... (${attempt})`;
     statusEl.classList.add('loading');
   };
 
   try {
-    const ai = new GoogleGenAI({apiKey});
+    const ai = new FreepikClient({apiKey});
     const model = imageModelSelect.value;
     const numberOfImages = parseInt(imageCountInput.value, 10);
     const aspectRatioSelector = document.querySelector(
@@ -1020,7 +1294,7 @@ async function generateAndDisplayVideo(
   skipVoiceOver: boolean = false,
 ) {
   const statusEl = resultItem.querySelector('.status') as HTMLParagraphElement;
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.FREEPIK_API_KEY;
 
   if (!apiKey) {
     statusEl.innerText =
@@ -1029,134 +1303,80 @@ async function generateAndDisplayVideo(
     return;
   }
 
-  const ai = new GoogleGenAI({apiKey});
-  
-  // Veo 3 models to try in order (auto-switching)
-  const veoModels = [
-    'veo-3.0-fast-generate-preview',
-    'veo-3.0-fast-generate-001',
-  ];
-  
-  let currentModelIndex = 0;
-  let lastError: Error | null = null;
+  const ai = new FreepikClient({apiKey});
   
   // Build enhanced prompt with aspect ratio instruction
   let enhancedPrompt = prompt;
   if (aspectRatio === '9:16') {
-    enhancedPrompt = `${prompt} The video must be a full-screen vertical video with a 9:16 aspect ratio.`;
+    enhancedPrompt = `${prompt} --prefer vertical 9:16 compositions suitable for social media stories.`;
   } else {
-    enhancedPrompt = `${prompt} The video must be a widescreen video with a 16:9 aspect ratio.`;
+    enhancedPrompt = `${prompt} --prefer cinematic 16:9 landscape framing.`;
   }
-  
+
+  if (imageBase64) {
+    enhancedPrompt += '\nReference image provided for visual context.';
+  }
+
   const config: GenerateVideosParameters = {
-    model: veoModels[currentModelIndex],
+    model: 'freepik-video',
     prompt: enhancedPrompt,
     config: {
       numberOfVideos: 1,
     },
   };
-  if (imageBase64) {
-    config.image = {imageBytes: imageBase64, mimeType: 'image/png'};
-  }
 
   const onRetryCallback = (attempt: number) => {
-    statusEl.innerHTML = ` Please Wait... <span class="progress-indicator">(${attempt})</span>`;
+    statusEl.innerHTML = `🔄 Searching Freepik library... (${attempt})`;
     statusEl.classList.add('loading');
   };
 
   try {
-    setLoadingState(statusEl, 'Generating with Veo 3 Fast');
+    setLoadingState(statusEl, '🔍 Searching Freepik videos');
     
-    let operation;
-    let modelSucceeded = false;
-    
-    // Try each Veo 3 model in order until one succeeds
-    while (currentModelIndex < veoModels.length && !modelSucceeded) {
-      const currentModel = veoModels[currentModelIndex];
-      config.model = currentModel;
-      
-      try {
-        console.log(`🎬 Attempting video generation with ${currentModel}...`);
-        console.log(`📝 Prompt: ${enhancedPrompt.substring(0, 100)}...`);
-        console.log(`⚙️ Config:`, config);
-        
-        statusEl.innerHTML = ` Generating with ${currentModel.includes('fast') ? 'Veo 3 Fast' : 'Veo 3'}`;
-        statusEl.classList.add('loading');
-        
-        operation = await retryWithBackoff(
-          () => ai.models.generateVideos(config),
-          onRetryCallback,
-        );
-        
-        modelSucceeded = true;
-        console.log(`✅ Successfully initiated generation with ${currentModel}`);
-        console.log(`📊 Operation:`, operation);
-      } catch (error) {
-        lastError = error as Error;
-        console.error(`❌ ${currentModel} failed:`, error);
-        currentModelIndex++;
-        
-        if (currentModelIndex < veoModels.length) {
-          const nextModel = veoModels[currentModelIndex];
-          console.log(`🔄 Switching to ${nextModel}...`);
-          statusEl.innerHTML = ` Switching to backup model...`;
-          statusEl.classList.add('loading');
-          await delay(1000); // Brief delay before trying next model
-        }
-      }
-    }
-    
-    // If all models failed, throw the last error
-    if (!modelSucceeded || !operation) {
-      throw lastError || new Error('All Veo 3 models failed to generate video');
+    const operation = await retryWithBackoff(
+      () => ai.models.generateVideos(config),
+      onRetryCallback,
+    );
+
+    const videos = operation.response?.generatedVideos ?? [];
+    if (!videos.length) {
+      throw new Error('No Freepik videos were found for this prompt.');
     }
 
-    const loadingMessages = [
-      ` Generating video`,
-      ` Processing visuals`,
-      ` Almost Ready`,
-      ` Finalizing with Veo 3`,
-      ` Rendering video`,
-    ];
-    let messageIndex = 0;
-
-    while (!operation.done) {
-      statusEl.innerHTML = loadingMessages[messageIndex];
-      clearLoadingState(statusEl);
-      statusEl.classList.add('loading');
-      messageIndex = (messageIndex + 1) % loadingMessages.length;
-      console.log(`⏳ Polling status: ${operation.done ? 'Done' : 'In progress'}`);
-      await delay(10000); // Poll every 10 seconds as recommended for Veo 3
-      operation = await retryWithBackoff(
-        () => ai.operations.getVideosOperation({operation}),
-        onRetryCallback,
-      );
-    }
-
-    const videos = operation.response?.generatedVideos;
-    if (!videos || videos.length === 0) {
-      throw new Error(
-        'No videos were generated. Please try a different prompt.',
-      );
-    }
-
-            setLoadingState(statusEl, 'Downloading video');
+    setLoadingState(statusEl, '⬇️ Downloading Freepik preview');
     const videoData = videos[0];
-    const url = `${videoData.video.uri}&key=${apiKey}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Failed to download video: ${res.statusText}`);
-    const blob = await res.blob();
-    const objectURL = URL.createObjectURL(blob);
+    const resource = videoData.resource;
+    const rawVideoUrl = videoData.video.uri || resource?.previewUrl;
+
+    if (!rawVideoUrl) {
+      throw new Error('Freepik did not return a video preview URL.');
+    }
+
+    let blob: Blob | null = null;
+    let objectURL = rawVideoUrl;
+    try {
+      const downloadResponse = await fetch(rawVideoUrl);
+      if (downloadResponse.ok) {
+        blob = await downloadResponse.blob();
+        objectURL = URL.createObjectURL(blob);
+      } else {
+        console.warn('Unable to download Freepik preview directly:', downloadResponse.statusText);
+      }
+    } catch (error) {
+      console.warn('Failed to fetch Freepik video preview:', error);
+    }
+
     const filename = `video-${Date.now()}.mp4`;
     generatedAssetUrls.push({url: objectURL, filename});
     resultItem.dataset.filename = filename; // Associate filename with the element
 
-    // Send video to Telegram bot
-    try {
-      await sendVideoToTelegram(blob, prompt, currentUserName);
-      console.log('✅ Video sent to Telegram successfully!');
-    } catch (error) {
-      console.warn('❌ Failed to send video to Telegram:', error);
+    if (blob) {
+      try {
+        await sendVideoToTelegram(blob, prompt, currentUserName);
+        console.log('✅ Video sent to Telegram successfully!');
+      } catch (error) {
+        console.warn('❌ Failed to send video to Telegram:', error);
+      }
     }
 
     // Create and append card content
@@ -1197,6 +1417,9 @@ async function generateAndDisplayVideo(
     }
     const videoEl = document.createElement('video');
     videoEl.src = objectURL;
+    if (resource?.previewUrl) {
+      videoEl.poster = resource.previewUrl;
+    }
     videoEl.autoplay = true;
     videoEl.loop = true;
     videoEl.controls = true;
@@ -1220,48 +1443,39 @@ async function generateAndDisplayVideo(
     extendButton.className = 'card-button';
     extendButton.onclick = async () => {
       const canvas = document.createElement('canvas');
-      canvas.width = videoEl.videoWidth;
-      canvas.height = videoEl.videoHeight;
+      canvas.width = videoEl.videoWidth || 1280;
+      canvas.height = videoEl.videoHeight || 720;
       const ctx = canvas.getContext('2d');
-      videoEl.currentTime = videoEl.duration - 0.1;
+      videoEl.currentTime = Math.max(0, videoEl.duration - 0.1);
       await new Promise((resolve) => {
         videoEl.addEventListener('seeked', () => resolve(true), {once: true});
       });
-      ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/png');
-      base64data = dataUrl.split(',')[1];
-      
-      // Switch to manual mode programmatically
-      activeMode = 'manual';
-      selectedModeText.textContent = 'Video Generator';
-      manualModePanel.classList.remove('hidden');
-      filmModePanel.classList.add('hidden');
-      imageModePanel.classList.add('hidden');
-      voiceModePanel.classList.add('hidden');
-      iklanModePanel.classList.add('hidden');
-      filmmakerModePanel.classList.add('hidden');
-      generateButton.textContent = 'Generate';
-      
-      // Update dropdown active state
-      modeDropdownMenu.querySelectorAll('.mode-dropdown-option').forEach(opt => {
-        opt.classList.remove('active');
-      });
-      modeDropdownMenu.querySelector('[data-mode="manual"]')?.classList.add('active');
-      imagePreview.src = dataUrl;
-      imagePreviewContainer.classList.remove('hidden');
-      fileNameEl.textContent = `Extending from previous video`;
-      fileInput.value = '';
-      // Only clear manual mode prompt inputs to avoid affecting other modes
-      const firstPrompt = document.querySelector(
-        '#manual-mode-panel .prompt-input',
-      ) as HTMLTextAreaElement;
-      document
-        .querySelectorAll('#manual-mode-panel .prompt-item:not(:first-child)')
-        .forEach((item) => item.remove());
-      firstPrompt.value = '';
-      firstPrompt.placeholder = 'Describe what happens next...';
-      firstPrompt.focus();
-      window.scrollTo({top: 0, behavior: 'smooth'});
+      if (ctx) {
+        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+        base64data = dataUrl.split(',')[1];
+
+        activeMode = 'manual';
+        selectedModeText.textContent = 'Video Generator';
+        manualModePanel.classList.remove('hidden');
+        filmModePanel.classList.add('hidden');
+        imageModePanel.classList.add('hidden');
+        voiceModePanel.classList.add('hidden');
+        iklanModePanel.classList.add('hidden');
+        filmmakerModePanel.classList.add('hidden');
+
+        const promptInput = document.querySelector('#manual-mode-panel .prompt-input') as HTMLTextAreaElement;
+        promptInput.value = prompt;
+
+        const imageDataUrl = `data:image/png;base64,${base64data}`;
+        imagePreview.src = imageDataUrl;
+        imagePreviewContainer.classList.remove('hidden');
+        fileNameEl.textContent = 'Frame captured from video';
+
+        scrollToElement(manualModePanel);
+        globalStatusEl.innerHTML = 'Frame captured! You can now edit the prompt and regenerate.';
+        globalStatusEl.style.color = '#22c55e';
+      }
     };
 
     const addSoundButton = document.createElement('button');
@@ -1468,10 +1682,10 @@ async function generateFilmMaker() {
   if (placeholder) placeholder.style.display = 'none';
 
   try {
-    const apiKey = process.env.API_KEY;
+    const apiKey = process.env.FREEPIK_API_KEY;
     if (!apiKey) throw new Error('API Key is missing.');
 
-    const ai = new GoogleGenAI({apiKey});
+    const ai = new FreepikClient({apiKey});
     
     // STEP 1: Analyze character image with Gemini Flash
     setLoadingState(globalStatusEl, '📸 Analyzing character from image');
@@ -1491,7 +1705,7 @@ Be very detailed and specific - this will be used to maintain consistency across
 
     const characterAnalysis = await retryWithBackoff(
       () => ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'freepik-text',
         contents: [
           {
             parts: [
@@ -1575,7 +1789,7 @@ IMPORTANT:
 
     const scenesResponse = await retryWithBackoff(
       () => ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'freepik-text',
         contents: scenesPrompt
       }),
       (attempt: number) => {
@@ -1651,7 +1865,7 @@ IMPORTANT:
             // Generate image with character reference using Gemini 2.5 Flash Image model
             const imageResponse = await retryWithBackoff(
               () => ai.models.generateContent({
-                model: 'gemini-2.5-flash-image',
+                model: 'freepik-image',
                 contents: [
                   {
                     parts: [
@@ -2358,15 +2572,13 @@ async function generateFilm() {
   const aspectRatio = filmAspectRatioSelector.dataset.ratio ?? '16:9';
 
   try {
-    const apiKey = process.env.API_KEY;
+    const apiKey = process.env.FREEPIK_API_KEY;
     if (!apiKey) throw new Error('API Key is missing.');
 
-    // Use Gemini 2.5 Flash with thinking mode
-    const MODEL_ID = 'gemini-2.5-flash';
-    const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_ID}:generateContent?key=${apiKey}`;
-    
-    setLoadingState(globalStatusEl, '🎬 Creating your story with AI Director');
-    
+    const ai = new FreepikClient({apiKey});
+
+    setLoadingState(globalStatusEl, '🎬 Discovering Freepik inspiration');
+
     // Enhanced prompt for story generation
     const storyPrompt = `${STORYBOARD_DIRECTOR_PROMPT}
 
@@ -2383,54 +2595,17 @@ IMPORTANT INSTRUCTIONS:
 
 Generate ${sceneCount} detailed scene prompts following the format specified above. Make sure to tell a complete story arc with beginning, middle, and end.`;
 
-    const requestBody = {
-      contents: [
-        {
-          parts: [
-            {
-              text: storyPrompt
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 1.5,
-        maxOutputTokens: 8192,
-        topP: 0.95,
-        topK: 40
+    const storyResponse = await retryWithBackoff(
+      () => ai.models.generateContent({
+        model: 'freepik-text',
+        contents: storyPrompt
+      }),
+      (attempt: number) => {
+        globalStatusEl.innerHTML = `🎬 Creating your story with AI Director... (${attempt})`;
       }
-    };
+    );
 
-    // Make request to Gemini API
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error('API Error:', errorData);
-      throw new Error(`API request failed: ${response.statusText}`);
-    }
-
-    // Parse response
-    const responseData = await response.json();
-    console.log('API Response:', responseData);
-    
-    let fullContent = '';
-    
-    // Extract text from response
-    if (responseData.candidates?.[0]?.content?.parts) {
-      for (const part of responseData.candidates[0].content.parts) {
-        if (part.text) {
-          fullContent += part.text;
-        }
-      }
-    }
+    const fullContent = storyResponse.text;
     
     if (!fullContent) {
       throw new Error('No content generated. Please try again.');
@@ -2681,7 +2856,7 @@ async function generateIklan() {
     return;
   }
 
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.FREEPIK_API_KEY;
   if (!apiKey) {
     globalStatusEl.innerText =
       'Error: API Key is not configured. Please contact the administrator.';
@@ -2700,7 +2875,7 @@ async function generateIklan() {
   resultsContainer.prepend(resultItem);
 
   try {
-    const ai = new GoogleGenAI({apiKey});
+    const ai = new FreepikClient({apiKey});
     
     // Get aspect ratio
     const iklanAspectRatioSelector = document.querySelector(
@@ -2726,7 +2901,7 @@ VOICEOVER_SCRIPT: [maximum 8 words punchy advertisement script for voiceover]`;
 
     const analysisResponse = await retryWithBackoff(
       () => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'freepik-text',
       contents: [
         {
           parts: [
@@ -2877,7 +3052,7 @@ async function generateVoice() {
     return;
   }
 
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.FREEPIK_API_KEY;
   if (!apiKey) {
     globalStatusEl.innerText =
       'Error: API Key is not configured. Please contact the administrator.';
