@@ -20,94 +20,8 @@
     </header>
 
     <main>
-      <section id="hero-section">
-        <div class="hero-container">
-          <div class="hero-content">
-            <h1 id="hero-title">NexaBot Veo 3</h1>
-            <p class="subtitle">
-              Generate stunning HD videos with Veo 3's cutting-edge AI technology.
-              Create 8-second 720p or 1080p videos with native audio from text prompts or images.
-            </p>
-            <p class="warning-text">
-              ⚠️ Kalau ketahuan menyebarkan saya bisa track IP nya dan saya blacklist
-            </p>
-            <button id="start-generating-btn" class="btn-primary-large">
-              Start Generate &rarr;
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section id="generator-section" class="hidden">
-        <!-- IP Check Modal -->
-        <div id="ip-check-modal">
-          <div class="ip-check-content">
-            <h2>Security Check</h2>
-            <p>Verifying your IP address...</p>
-            <div id="ip-loading" class="ip-loading">
-              <div class="spinner"></div>
-              <span>Checking IP...</span>
-            </div>
-            <div id="ip-display" class="ip-display hidden">
-              <p class="ip-label">Your IP Address:</p>
-              <p id="user-ip" class="user-ip">-</p>
-              <p class="ip-warning">⚠️ This IP will be monitored for unauthorized sharing</p>
-              <button id="continue-to-access" class="btn-primary">Continue</button>
-            </div>
-          </div>
-        </div>
-        
-        <div id="access-gate" class="hidden">
-          <div class="access-gate-content">
-            <h2>Access Required</h2>
-            <p>Please enter your name and access code to use the studio.</p>
-            <form id="access-form">
-              <input
-                type="text"
-                id="user-name-input"
-                placeholder="Your Name"
-                required
-              />
-              <input
-                type="password"
-                id="access-code-input"
-                placeholder="••••••"
-                required
-              />
-              <div class="sharing-option">
-                <label class="sharing-label">Sharing Preference:</label>
-                <div class="sharing-toggle-group">
-                  <label class="sharing-toggle">
-                    <input type="radio" name="sharing" value="share" checked>
-                    <span class="toggle-option share-option">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
-                        <polyline points="16 6 12 2 8 6"></polyline>
-                        <line x1="12" y1="2" x2="12" y2="15"></line>
-                      </svg>
-                      Share
-                    </span>
-                  </label>
-                  <label class="sharing-toggle">
-                    <input type="radio" name="sharing" value="private">
-                    <span class="toggle-option private-option">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                      </svg>
-                      Private
-                    </span>
-                  </label>
-                </div>
-                <p class="sharing-info">Choose whether to share your generated content to our Telegram community</p>
-              </div>
-              <button type="submit" class="btn-primary">Unlock Studio</button>
-            </form>
-            <p id="access-error"></p>
-          </div>
-        </div>
-
-        <div class="generator-app hidden">
+      <section id="generator-section">
+        <div class="generator-app">
           <!-- Left Column: Control Panel -->
           <div class="control-panel">
             <div class="mode-dropdown-container">
@@ -578,6 +492,6 @@
     </main>
 
     <script type="module" src="index.tsx"></script>
-  <script type="module" src="/index.tsx"></script>
-</body>
+    <script type="module" src="/index.tsx"></script>
+  </body>
 </html>

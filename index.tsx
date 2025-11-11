@@ -478,7 +478,7 @@ let iklanBase64data = '';
 let filmmakerBase64data = '';
 
 let sceneCounter = 1;
-let currentUserName = ''; // Store current user name for Telegram
+let currentUserName = 'Guest Creator'; // Default user name for Telegram when no login is required
 let sharingEnabled = true; // Store sharing preference (default: true for backward compatibility)
 let promptMode: 'single' | 'batch' = 'single'; // Store prompt mode (single or batch)
 
@@ -586,33 +586,10 @@ function clearOtherModeInputs(currentMode: string) {
 }
 
 // DOM Elements
-const heroSection = document.querySelector('#hero-section') as HTMLElement;
-const generatorSection = document.querySelector(
-  '#generator-section',
-) as HTMLElement;
-const startGeneratingBtn = document.querySelector(
-  '#start-generating-btn',
-) as HTMLButtonElement;
 const supportBtn = document.querySelector(
   '#support-btn',
 ) as HTMLButtonElement;
-const ipCheckModal = document.querySelector('#ip-check-modal') as HTMLDivElement;
-const ipLoading = document.querySelector('#ip-loading') as HTMLDivElement;
-const ipDisplay = document.querySelector('#ip-display') as HTMLDivElement;
-const userIpElement = document.querySelector('#user-ip') as HTMLParagraphElement;
-const continueToAccessBtn = document.querySelector('#continue-to-access') as HTMLButtonElement;
-const accessGate = document.querySelector('#access-gate') as HTMLDivElement;
 const generatorApp = document.querySelector('.generator-app') as HTMLDivElement;
-const accessForm = document.querySelector('#access-form') as HTMLFormElement;
-const userNameInput = document.querySelector(
-  '#user-name-input',
-) as HTMLInputElement;
-const accessCodeInput = document.querySelector(
-  '#access-code-input',
-) as HTMLInputElement;
-const accessError = document.querySelector(
-  '#access-error',
-) as HTMLParagraphElement;
 const modeDropdownButton = document.querySelector(
   '#mode-dropdown-button',
 ) as HTMLButtonElement;
@@ -1629,37 +1606,6 @@ async function sendImageToTelegram(imageDataUrl: string, prompt: string, userNam
 
 // Telegram verification removed - no longer needed
 
-// IP Check Functions
-async function getUserIP(): Promise<string> {
-  try {
-    // Try multiple IP services for redundancy
-    const services = [
-      'https://api.ipify.org?format=json',
-      'https://ipapi.co/json/',
-      'https://api.myip.com'
-    ];
-    
-    for (const service of services) {
-      try {
-        const response = await fetch(service);
-        if (response.ok) {
-          const data = await response.json();
-          // Different services return IP in different fields
-          return data.ip || data.query || 'Unable to detect';
-        }
-      } catch (err) {
-        continue; // Try next service
-      }
-    }
-    
-    // If all services fail, return a fallback
-    return 'IP Detection Failed';
-  } catch (error) {
-    console.error('Failed to get IP:', error);
-    return 'Error detecting IP';
-  }
-}
-
 // Film Maker Generation Logic
 async function generateFilmMaker() {
   const story = filmmakerStoryInput.value.trim();
@@ -2048,84 +1994,9 @@ function setupEventListeners() {
     heroTitle.textContent = atob(encodedTitle);
   }
   
-  startGeneratingBtn.addEventListener('click', async () => {
-    heroSection.classList.add('hidden');
-    generatorSection.classList.remove('hidden');
-    
-    // Disable body scrolling when modals are shown
-    document.body.style.overflow = 'hidden';
-    
-    window.scrollTo({top: 0}); // Scroll to the top of the generator
-    
-    // Show IP check modal first
-    ipCheckModal.classList.remove('hidden');
-    
-    // Start IP detection after a brief delay for effect
-    setTimeout(async () => {
-      const userIP = await getUserIP();
-      
-      // Hide loading and show IP
-      ipLoading.classList.add('hidden');
-      ipDisplay.classList.remove('hidden');
-      userIpElement.textContent = userIP;
-      
-      // Log IP for monitoring (you can send this to your backend)
-      console.log(`User IP detected: ${userIP}`);
-    }, 1500); // 1.5 second delay for loading effect
-  });
-  
-  // Continue button after IP check
-  continueToAccessBtn.addEventListener('click', () => {
-    ipCheckModal.classList.add('hidden');
-    accessGate.classList.remove('hidden');
-  });
-
-  accessForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const userName = userNameInput.value.trim();
-    const accessCode = accessCodeInput.value.trim();
-    
-    // Get sharing preference from radio buttons
-    const sharingOption = document.querySelector('input[name="sharing"]:checked') as HTMLInputElement;
-    sharingEnabled = sharingOption?.value === 'share';
-    
-    // Use atob for simple obfuscation. 'TkVYQUJPVDk5OQ==' is 'NEXABOT999' in base64.
-    const correctCode = atob('TkVYQUJPVDk5OQ==');
-    
-    if (!userName) {
-      accessError.textContent = 'Please enter your name.';
-      userNameInput.focus();
-      return;
-    }
-    
-    if (accessCode !== correctCode) {
-      accessError.textContent = 'Invalid access code. Please try again.';
-      accessCodeInput.value = '';
-      const content = accessGate.querySelector('.access-gate-content');
-      if (content) {
-        content.classList.add('shake');
-        setTimeout(() => {
-          content.classList.remove('shake');
-        }, 0.3);
-      }
-      return;
-    }
-    
-    // Direct verification successful (no Telegram check)
-    currentUserName = userName;
-    console.log(`User ${userName} logged in successfully with sharing preference: ${sharingEnabled ? 'Share' : 'Keep Private'}`);
-    
-    // Show success message briefly
-    accessError.innerHTML = '<span style="color: #22c55e;">✅ Access granted!</span>';
-    
-    setTimeout(() => {
-      // Re-enable body scrolling
-      document.body.style.overflow = 'auto';
-      
-      accessGate.classList.add('hidden');
-      generatorApp.classList.remove('hidden');
-    }, 500);
-  });
+  if (generatorApp) {
+    generatorApp.classList.remove('hidden');
+  }
 
   closeSupportBtn.addEventListener('click', () => {
     supportSection.classList.add('hidden');
@@ -3180,28 +3051,6 @@ function handleHeaderScroll() {
 // Add scroll event listener
 window.addEventListener('scroll', handleHeaderScroll);
 
-// Prevent scrolling during access gate
-function preventScroll(e: Event) {
-  if (!accessGate.classList.contains('hidden')) {
-    e.preventDefault();
-    e.stopPropagation();
-    return false;
-  }
-}
-
-// Add scroll prevention event listeners
-document.addEventListener('wheel', preventScroll, { passive: false });
-document.addEventListener('touchmove', preventScroll, { passive: false });
-document.addEventListener('keydown', (e) => {
-  if (!accessGate.classList.contains('hidden')) {
-    // Prevent arrow keys, space, page up/down from scrolling
-    if ([32, 33, 34, 35, 36, 37, 38, 39, 40].includes(e.keyCode)) {
-      e.preventDefault();
-      return false;
-    }
-  }
-});
-
 // Handle enhance prompt functionality
 async function handleEnhancePrompt(textarea: HTMLTextAreaElement, button: HTMLButtonElement) {
   const originalPrompt = textarea.value.trim();
@@ -3267,7 +3116,7 @@ async function handleEnhancePrompt(textarea: HTMLTextAreaElement, button: HTMLBu
 // App Initialization
 setupEventListeners();
 
-// Ensure proper scroll behavior on page load
-if (!generatorSection.classList.contains('hidden') && !accessGate.classList.contains('hidden')) {
-  document.body.style.overflow = 'hidden';
+// Ensure generator interface is visible on page load
+if (generatorApp) {
+  generatorApp.classList.remove('hidden');
 }
